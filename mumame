@@ -1,0 +1,777 @@
+#!/usr/bin/perl
+## MUMAME
+
+$app_title     = "MuMaMe - Mutation Mapping in Metagenomes";
+$app_author    = "Johan Bengtsson-Palme, University of Wisconsin-Madison";
+$app_version   = "1.0";
+$app_message   = "";
+# ----------------------------------------------------------------- #
+
+# License information
+$license =
+  "  MuMaMe - Mutation Mapping in Metagenomes
+    Copyright (C) 2018-2019 Johan Bengtsson-Palme
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
+       * Redistributions of source code must retain the above copyright
+         notice, this list of conditions and the following disclaimer.
+       * Redistributions in binary form must reproduce the above copyright
+         notice, this list of conditions and the following disclaimer in the
+         documentation and/or other materials provided with the distribution.
+       * Neither the name of University of Gothenburg, nor the
+         names of its contributors may be used to endorse or promote products
+         derived from this software without specific prior written permission.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS 'AS IS' AND
+   ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+   WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+   DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+   DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+   (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+   LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+";
+
+## BUGS:
+$bugs = "Added feature:\
+- Added a usage message when mumame is called without arguments.\
+
+Known bugs in this version ($app_version):\
+- None\
+";
+
+## OPTIONS:
+
+$usage = "\
+-i <sequence file> : the path to the input read file (FASTA or FASTQ-format), can be reused any number of times\
+-d <database> : the path to the mutation database\
+-o <output file> : the base name of the output files, default = 'mapping_results'\
+-L : do not auto-detect format and paired read files\
+
+-c <ratio> : sequence identity cutoff, default = 0.95\
+-t <ratio> : target coverage, default = 0.55\
+-q <ratio> : query coverage, default = 0\
+-n : specifies nucleotide database, default is to assume protein\
+-m <usearch> : mapper to use, default = usearch\
+--alnout : Will save alignments to a separate file, if possible in the mapper\
+--binary <path> : path to a program binary to use for the search
+
+-h : displays short usage information\
+--help : displays this help message\
+--bugs : displays the bug fixes and known bugs in this version\
+--license : displays licensing information\
+";
+
+
+## Print title message
+print STDERR "$app_title\nby $app_author\nVersion: $app_version\n$app_message";
+print STDERR "-----------------------------------------------------------------\n";
+
+
+undef @readFiles;
+$db = "";
+$output = "mapping_results";
+$C = 0.95;
+$T = 0.55;
+$Q = 0;
+$Literal = 0;
+$prot_db = 1;
+$mapper = "usearch";
+$alnout = 0;
+$binary = "";
+$debug = 0;
+
+for ($i = 0; $i <= scalar(@ARGV); $i++) { # Goes through the list of arguments
+  $arg = @ARGV[$i];		# Stores the current argument in $arg
+  $option_processed = 0;
+
+  if ($arg eq "-i") {		# Read input file from -i flag
+    $i++;
+    push(@readFiles, @ARGV[$i]);
+    $option_processed = 1;
+  }
+  if ($arg eq "-o") {		# Read output file
+    $i++;
+    $output = @ARGV[$i];
+    $option_processed = 1;
+  }
+  if ($arg eq "-d") {       	# Read database from -d flag
+    $i++;
+    $db = @ARGV[$i];
+    $option_processed = 1;
+  }
+
+  if ($arg eq "-n") {		# Read nucleotide DB flag
+    $prot_db = 0;
+    $option_processed = 1;
+  }
+  if ($arg eq "--alnout") {		# Read alnout flag
+    $alnout = 1;
+    $option_processed = 1;
+  }
+
+
+  if ($arg eq "-L") {		# Read literal option
+    $Literal = 1;
+    $option_processed = 1;
+  }
+  if ($arg eq "-c") {		# Read cutoff
+    $i++;
+    $C = @ARGV[$i];
+    $option_processed = 1;
+  }
+  if ($arg eq "-q") {		# Read query length cutoff
+    $i++;
+    $Q = @ARGV[$i];
+    $option_processed = 1;
+  }
+  if ($arg eq "-t") {		# Read target length cutoff
+    $i++;
+    $T = @ARGV[$i];
+    $option_processed = 1;
+  }
+  if ($arg eq "-m") {		# Read mapper
+    $i++;
+    $mapper = @ARGV[$i];
+    $option_processed = 1;
+  }
+  if ($arg eq "--binary") {		# Read binary
+    $i++;
+    $binary = @ARGV[$i];
+    $option_processed = 1;
+  }
+
+  if ($arg eq "--debug") {		# Read debug option
+    $debug = 1;
+    $option_processed = 1;
+  }
+  ## If "-h" is among the options, output short usage data and options
+  if ($arg eq "-h") {
+    print "Usage: mumame -d <Mumame database> -o <output> [Any number of input files]\nOptions:$usage";
+    print "-----------------------------------------------------------------\n";
+    exit;			# Exit
+  }
+
+  ## If "--help" is among the options, output usage data and all options
+  if ($arg eq "--help") {
+    print "Usage: mumame -d <Mumame database> -o <output> [Any number of input files]\nOptions:$usage";
+    print "-----------------------------------------------------------------\n";
+    exit;			# Exit
+  }
+
+  ## If "--bugs" is among the options, output bugs and features information
+  if ($arg eq "--bugs") {
+    print "$bugs\n";
+    exit;			# Exit
+  }
+
+  ## If "--license" is among the options, output license information
+  if ($arg eq "--license") {
+    print "$license\n";
+    exit;			# Exit
+  }
+
+  if ($option_processed == 0) {
+    push(@readFiles, @ARGV[$i]);
+  }
+}
+
+if ((scalar(@readFiles) == 0) || ((scalar(@readFiles) == 1) && (@readFiles[0] eq ""))) {
+  print "Usage: mumame -d <Mumame database> -o <output> [Any number of input files]\nOptions:$usage";
+  print "-----------------------------------------------------------------\n";
+  exit;	
+}
+
+if ($db eq "") {
+  print "Usage: mumame -d <Mumame database> -o <output> [Any number of input files]\nOptions:$usage";
+  print "-----------------------------------------------------------------\n";
+  exit;	
+}
+
+if ($binary eq "") {
+  $binary = $mapper;
+}
+
+if ($debug == 1) {
+  open(LOG, ">>mumame_log.txt");
+  print LOG "--------------------------------------------\n";
+  print LOG "New run started:\n";
+  print LOG "mumame";
+  for ($i = 0; $i <= scalar(@ARGV); $i++) {
+    print LOG " " . @ARGV[$i];
+  }
+  print LOG "\n";
+}
+
+## Check database
+if ($prot_db == 1) {
+  $residues = `grep -v ">" $db.fasta | head -100 | tr -d "\n"`;
+  $nonatgc = $residues;
+  $nonatgc =~ s/[ATGCatgc]//g;
+  if (length($nonatgc) / length($residues) < 0.1) {
+    $prot_db = 0;
+    print STDERR "More than 90% of residues in database sequences are ATGC, will assume nucleotide database.\n";
+  }
+}
+  
+print STDERR "Processing input file list...\n";
+
+if ($Literal == 0) {
+  @rawReadFiles = @readFiles;
+  undef @readFiles;
+  undef %combinations;
+  undef %processed;
+  foreach $readFile (@rawReadFiles) {
+    if (defined($processed{$readFile})) {
+      next;
+    }
+    $processed{$readFile} = 1;
+    $fileBase = $readFile;
+    $action = "add";
+    if (substr($fileBase, -3) eq ".gz") {
+      $action = "gunzip";
+      $fileBase = substr($fileBase, 0, length($fileBase) - 3);
+    }
+    if (substr($fileBase, -5) eq ".dsrc") {
+      $action = "dsrc";
+      $fileBase = substr($fileBase, 0, length($fileBase) - 5);
+    }
+    $fileRoot = $fileBase;
+    $fileRoot =~ s/fastq$/fq/;
+    $fileRoot =~ s/_[12].fq$//;
+    $fileRoot =~ s/_R[12].fq$//;
+    $fileRoot =~ s/_R[12]_.*.fq$//;
+    $fileRoot =~ s/_[12]_[a-z]*_[12].fq$//;
+
+    $combinations{$fileRoot} = "$readFile|$action";
+    
+    foreach $otherFile (@rawReadFiles) {
+      if (defined($processed{$otherFile})) {
+	next;
+      }
+      $otherBase = $otherFile;
+      $otheraction = "add";
+      if (substr($otherBase, -3) eq ".gz") {
+	$otheraction = "gunzip";
+	$otherBase = substr($otherBase, 0, length($otherBase) - 3);
+      }
+      if (substr($otherBase, -5) eq ".dsrc") {
+	$otheraction = "dsrc";
+	$otherBase = substr($otherBase, 0, length($otherBase) - 5);
+      }
+      $otherRoot = $otherBase;
+      $otherRoot =~ s/fastq$/fq/;
+      $otherRoot =~ s/_[12].fq$//;
+      $otherRoot =~ s/_R[12].fq$//;
+      $otherRoot =~ s/_R[12]_.*.fq$//;
+      $otherRoot =~ s/_[12]_.*_[12].fq$//;
+
+      if ($otherRoot eq $fileRoot) {
+	$combinations{$fileRoot} = $combinations{$fileRoot} . "\n" . "$otherFile|$otheraction";
+	$processed{$otherFile} = 1;
+      }
+    }
+    @readFiles = keys(%combinations);
+  }
+}
+
+foreach $fileInfo (@readFiles) {
+  if ($fileInfo eq "") {
+    next;
+  }
+  if ($Literal == 1) {
+    @combination[0] = "$fileInfo|none";
+  } else {
+    $allFiles = $combinations{$fileInfo};
+    @combination = split('\n', $allFiles);
+    if ($debug == 1) {
+      print LOG "rm $output.$fileInfo.$C.usearch 2> /dev/null\n";
+    }
+    `rm $output.$fileInfo.$C.usearch 2> /dev/null`;
+  }
+  foreach $fileaction (@combination) {
+    ($afile, $action) = split('\|', $fileaction);
+    print STDERR "Processing $afile...\n";
+    if ($action eq "gunzip") {
+      if ($debug == 1) {
+	print LOG "gunzip -c $afile > tmp_$afile.fastq\n";
+      }
+      `gunzip -c $afile > tmp_$afile.fastq`;
+      $readFile = "tmp_$afile.fastq";
+    }
+    if ($action eq "dsrc") {
+      if ($debug == 1) {
+	print LOG "dsrc d $afile tmp_$afile.fastq\n";
+      }
+      `dsrc d $afile tmp_$afile.fastq`;
+      $readFile = "tmp_$afile.fastq";
+    }
+    if ($action eq "add") {
+      $readFile = $afile;
+    }
+    if ($action eq "none") {
+      $readFile = $afile;
+    }
+    if ($mapper eq "vmatch") {
+      print STDERR "Support for Vmatch will be implemented in the future! Use usearch for now!\n";
+      exit;
+    }
+    
+    if ($mapper eq "blastall") {
+      print STDERR "Support for BLAST will be implemented in the future! Use usearch for now!\n";
+      exit;
+    }
+    print STDERR "Running mapping for $readFile...\n";
+    if ($mapper eq "usearch") {
+      if ($prot_db == 0) {
+	if ($alnout == 1) {
+	  if ($debug == 1) {
+	    print LOG "$binary --usearch_global $readFile --db $db.fasta --id $C -strand both -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch --alnout $output.$readFile.$C.alnout\n";
+	  }
+	  `$binary --usearch_global $readFile --db $db.fasta --id $C -strand both -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch --alnout $output.$readFile.$C.alnout`;
+	} else {
+	  if ($debug == 1) {
+	    print LOG "$binary --usearch_global $readFile --db $db.fasta --id $C -strand both -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch\n";
+	  }
+	  `$binary --usearch_global $readFile --db $db.fasta --id $C -strand both -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch`;
+	}
+      } else {
+	if ($alnout == 1) {
+	  if ($debug == 1) {
+	    print LOG "$binary --usearch_global $readFile --db $db.fasta --id $C -target_cov $T -query_cov $Q --blast6out $output.$readFile.$id.usearch --alnout $output.$readFile.$C.alnout\n";
+	  }
+	  `$binary --usearch_global $readFile --db $db.fasta --id $C -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch --alnout $output.$readFile.$C.alnout`;
+	} else {
+	  if ($debug == 1) {
+	    print LOG "$binary --usearch_global $readFile --db $db.fasta --id $C -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch\n";
+	  }
+	  `$binary --usearch_global $readFile --db $db.fasta --id $C -target_cov $T -query_cov $Q --blast6out $output.$readFile.$C.usearch`;
+	}
+      }
+    }
+    $firstline = `head -1 $readFile`;
+    $tmpCount = "NA";
+    if (substr($firstline, 0, 1) eq ">") {
+      chomp($tmpCount = `grep -c ">" $readFile`);
+    } 
+    if (substr($firstline, 0, 1) eq "@") {
+      chomp($tmpCount = `wc -l $readFile`);
+      $tmpCount = $tmpCount / 4;
+    }
+    if ($libCount ne "NA") {
+      if ($tmpCount ne "NA") {
+	$libCount = $libCount + $tmpCount;
+      } else {
+	$libCount = "NA";
+      }
+    }
+    if ($Literal == 0) {
+      if ($alnout == 1) {
+	if ($fileInfo ne $readFile) {
+	  if ($debug == 1) {
+	    print LOG "cat $output.$readFile.$C.usearch >> $output.$fileInfo.$C.usearch\n";
+	    print LOG "cat $output.$readFile.$C.alnout >> $output.$fileInfo.$C.alnout\n";
+	  }
+	  `cat $output.$readFile.$C.usearch >> $output.$fileInfo.$C.usearch`;
+	  `cat $output.$readFile.$C.alnout >> $output.$fileInfo.$C.alnout`;
+	}
+      } else {
+	if ($fileInfo ne $readFile) {
+	  if ($debug == 1) {
+	    print LOG "cat $output.$readFile.$C.usearch >> $output.$fileInfo.$C.usearch\n";
+	  }
+	  `cat $output.$readFile.$C.usearch >> $output.$fileInfo.$C.usearch`;
+	}
+      }
+      if (substr($readFile, 0, 4) eq "tmp_") {
+	if ($debug == 1) {
+	  print LOG "rm $readFile\n";
+	}
+	`rm $readFile`;
+      }
+    }
+  }
+
+  if ($debug == 1) {
+    print LOG "echo $libCount > $output.$fileInfo.$C.list.txt.count\n";
+  }
+  `echo $libCount > $output.$fileInfo.$C.list.txt.count`;
+  $libCount = 0;
+
+  if ($mapper eq "usearch") {
+    reformat_output("$output.$fileInfo.$C.usearch", "$db.mapping.txt", "$output.$fileInfo.$C.mapping.txt");
+  }
+  count_hits("$output.$fileInfo.$C.mapping.txt", "$output.$fileInfo.$C.list.txt");
+  
+
+}
+
+print STDERR "Summarizing results...\n";
+
+collect_hits("$output","$C.list.txt");
+collect_hits_per_mutation("$output");
+
+if ($debug == 1) {
+  close LOG;
+}
+
+print STDERR "Mumame has finished.\n";
+
+## And that's it. The end.
+
+sub reformat_output {
+  my $blast = shift;
+  my $mapFile = shift;
+  my $outFile = shift;
+  my %mapping = {};
+
+  ## Read mapping
+  open (MAPPING, $mapFile);
+  while (my $line = <MAPPING>) {
+    chomp($line);
+    (my $id, my $map) = split('\t', $line);
+    $mapping{$id} = $map;
+  }
+  close MAPPING;
+
+  ## Compile results
+  open (BLAST, "$blast");
+  open (OUT, ">$outFile");
+  my $lastQuery = "";
+  my @bestData = (0,0,0,0,1000,1000,0,0,0,0,1000,-1000);
+  my $geneFam = "";
+  while (my $line = <BLAST>) {
+    chomp($line);
+    if (substr($line,0,1) ne "#") {
+      $line =~ s/   */\t/g;
+      my @matchData = split('\t', $line);
+      if ((@matchData[0] ne $lastQuery) && (@bestData[0] ne "0")) {
+	my $matchLength = @bestData[3];
+	my $matchSubject = @bestData[1];
+	my $matchSS = @bestData[8];
+	my $matchQLength = @bestData[7] - @bestData[6];
+	my $matchQuery = @bestData[0];
+	my $matchQS = @bestData[6];
+	my $matchE = @bestData[10];
+	my $matchScore = @bestData[11];
+	my $matchIdentity = @bestData[2];
+	my @subjectIDs = split('\|',$matchSubject);
+
+	if (defined($mapping{$matchSubject})) {
+	  $geneFam = $mapping{$matchSubject};
+	} else {
+	  $geneFam = $matchSubject;
+	  foreach my $possible_ID (@subjectIDs) {
+	    if (defined($mapping{$possible_ID})) {
+	      $geneFam = $mapping{$possible_ID};
+	      last;
+	    }
+	  }
+	}
+	print OUT "$matchQuery\t$matchSubject\t$geneFam\t$matchE\t$matchScore\t$matchIdentity\t$matchLength\n";
+	$lastQuery = $matchQuery;
+	@bestData = (0,0,0,0,1000,1000,0,0,0,0,1000,-1000);
+      }
+      if (@matchData[2] > @bestData[2]) {
+	my $subID = @matchData[1];
+	my @subjectIDs = split('\|',$subID);
+	if (defined($mapping{$subID})) {
+	  if (($mapping{$subID} ne "#N/A") && ($mapping{$subID} ne "")) {
+	    @bestData = @matchData;
+	  }
+	} else {
+	  foreach my $possible_ID (@subjectIDs) {
+	    if (defined($mapping{$possible_ID})) {
+	      @bestData = @matchData;
+	      last;
+	    }
+	  }
+	}
+      }
+      $lastQuery = @matchData[0];
+    }
+  }
+  close (BLAST);
+
+  my ($matchQuery, $matchSubject, $matchIdentity, $matchLength, $mismatches, $gaps, $matchQS, $matchQE, $matchSS, $matchSE, $matchE, $matchScore) = @bestData;
+  my @subjectIDs = split('\|',$matchSubject);
+  if (defined($mapping{$matchSubject})) {
+    $geneFam = $mapping{$matchSubject};
+  } else {
+    $geneFam = $matchSubject;
+    foreach my $possible_ID (@subjectIDs) {
+      if (defined($mapping{$possible_ID})) {
+	$geneFam = $mapping{$possible_ID};
+	last;
+      }
+    }
+  } 
+
+  if ($matchQuery ne "0") {
+    print OUT "$matchQuery\t$matchSubject\t$geneFam\t$matchE\t$matchScore\t$matchIdentity\t$matchLength\n";
+  }
+  close OUT;
+}
+
+
+sub count_hits {
+  my $input = shift;
+  my $outFile = shift;
+  my $A = $input;
+  my %matches = {};
+
+  if ($input =~ m/\{\}/) {
+    $A =~ s/\{\}/1/g;
+  }
+
+  open (A, $A);
+  my @A = <A>;
+  close (A);
+
+  my $matchedReads = 0;
+  my $missingReads = 0;
+  my $Amatch = "";
+
+  foreach $Amatch (@A) {
+    chomp($Amatch);
+    my ($Aquery, $Asubject, $Afam, $AE, $Ascore, $Aid, $Alen) = split('\t', $Amatch);
+    if ($Afam ne "") {
+      if (defined($matches{$Afam})) {
+	$matches{$Afam} = $matches{$Afam} + 1;
+      } else {
+	$matches{$Afam} = 1;
+      }
+      $matchedReads++;
+    }
+  }
+
+  print STDERR "Processed $matchedReads matches.\n";
+
+  my $key = "";
+  open (OUT, ">$outFile");
+  foreach $key (sort(keys(%matches))) {
+    if ($matches{$key} > 0) {
+      print OUT $key . "\t" . $matches{$key} . "\n";
+    }
+  }
+  close OUT;
+
+}
+
+sub collect_hits {
+  my $output = shift;
+  my $suffix = shift;
+
+  my %AoH = {};
+
+  my @fileList = `ls $output.*.$suffix`;
+  my @families = ();
+  
+  my $fileNo = 0;
+  my $file = "";
+  foreach $file (@fileList) {
+    chomp($file);
+    open (INPUT, $file);
+    while (my $line = <INPUT>) {
+      chomp($line);
+      my @line = split('\t',$line);
+      my $family = @line[0];
+      my $count = @line[1];
+      $AoH[$fileNo]->{$family} = $count;
+      if (!(@found = grep(/\Q$family\E/,@families))) {
+	push(@families,$family);
+      }
+    }
+    close (INPUT);
+    $fileNo++;
+  }
+
+  open (OUT, ">$output.table.txt");
+  
+  print OUT "Accession";
+  foreach $file (@fileList) {
+    chomp($file);
+    my $acc = $file;
+    if ($acc ne "") {
+      $acc =~ s/.$suffix//;
+      $acc =~ s/$output.//;
+      print OUT "\t" . $acc . "-Mut";
+    }
+  }
+  foreach $file (@fileList) {
+    chomp($file);
+    my $acc = $file;
+    if ($acc ne "") {
+      $acc =~ s/.$suffix//;
+      $acc =~ s/$output.//;
+      print OUT "\t" . $acc . "-WT";
+    }
+  }
+  print OUT "\n";
+
+  my @sortFam = sort @families;
+  my %wtFams = {};
+  
+  foreach $family (@sortFam) {
+    if (substr($family, 0, 8) eq "Wildtype") {
+      $wtFams{$family} = 0;
+      next;
+    }
+    my $familyWT = $family;
+    $familyWT =~ s/^[^:]*:/Wildtype:/;
+    $wtFams{$familyWT} = 1;
+    print OUT $family;
+    
+    my $fileNo = 0;
+    foreach my $file (@fileList) {
+      if ($file ne "") {
+	print OUT "\t";
+	
+	my $count = $AoH[$fileNo]{$family};
+	if ($count == 0) {
+	  print OUT "0";
+	} else {
+	  print OUT $count;
+	}
+	$fileNo++;
+      }
+    }
+    my $fileNo = 0;
+    foreach my $file (@fileList) {
+      if ($file ne "") {
+	print OUT "\t";
+	
+	my $count = $AoH[$fileNo]{$familyWT};
+	if ($count == 0) {
+	  print OUT "0";
+	} else {
+	  print OUT $count;
+	}
+	$fileNo++;
+      }
+    }
+    print OUT "\n";
+  }
+  foreach $family (sort(keys(%wtFams))) {
+    if (defined($wtFams{$family})) {
+      if ($wtFams{$family} == 1) {
+	next;
+      }
+      $wtFams{$family} = 1;
+      print OUT $family;
+    
+      my $fileNo = 0;
+      foreach my $file (@fileList) {
+	if ($file ne "") {
+	  print OUT "\t";
+	  print OUT "0";
+	  $fileNo++;
+	}
+      }
+      my $fileNo = 0;
+      foreach my $file (@fileList) {
+	if ($file ne "") {
+	  print OUT "\t";
+	  
+	  my $count = $AoH[$fileNo]{$family};
+	  if ($count == 0) {
+	    print OUT "0";
+	  } else {
+	    print OUT $count;
+	  }
+	  $fileNo++;
+	}
+      }
+      print OUT "\n";
+    }
+  }
+  print OUT "TOTAL READS";
+    
+  my $fileNo = 0;
+  foreach my $file (@fileList) {
+    chomp($file);
+    if ($file ne "") {
+      print OUT "\t";
+      open (COUNT, "$file.count");
+      my $seqCount = <COUNT>;
+      chomp($seqCount);
+      close COUNT;
+      print OUT $seqCount;
+      $fileNo++;
+    }
+  }
+  foreach my $file (@fileList) {
+    chomp($file);
+    if ($file ne "") {
+      print OUT "\t";
+      open (COUNT, "$file.count");
+      my $seqCount = <COUNT>;
+      chomp($seqCount);
+      close COUNT;
+      print OUT $seqCount;
+      $fileNo++;
+    }
+  }
+  close OUT;
+}
+
+sub collect_hits_per_mutation {
+  my $table = shift;
+  open (TABLE, "$table.table.txt");
+  my $line = <TABLE>;
+  chomp($line);
+  my $firstline = $line;
+  my (@fields) = split('\t', $line);
+  my @colType = ();
+  my %permut_table = {};
+  for (my $f = 0; $f < scalar(@fields); $f++) {
+    my $field = @fields[$f];
+    @colType[$f] = -1;
+    if (substr($field, -4) eq "-Mut") {
+      @colType[$f] = 1;
+    }
+    if (substr($field, -3) eq "-WT") {
+      @colType[$f] = 0;
+    }
+  }
+  my @mutKeys = ();
+  while ($line = <TABLE>) {
+    chomp($line);
+    (@fields) = split('\t', $line);
+#    A67S+S83I:Escherichia coli gyrA conferring resistance to fluoroquinolones
+    (my $muts, my $name) = split(':', @fields[0]);
+    my @muts = split('\+', $muts);
+    foreach my $mut (@muts) {
+      my @mutCounts = ();
+      if (defined($permut_table{"$mut:$name"})) {
+	@mutCounts = split('\t', $permut_table{"$mut:$name"});
+      } else {
+	push(@mutKeys, "$mut:$name");
+      }
+      for (my $f = 1; $f < scalar(@fields); $f++) {
+	if (@colType[$f] == 1) {
+	  @mutCounts[$f-1] = @mutCounts[$f-1] + @fields[$f];
+	}
+	if (@colType[$f] == 0) {
+	  @mutCounts[$f-1] = @fields[$f];
+	}
+      }
+      my $mutString = "";
+      foreach my $mcount (@mutCounts) {
+	$mutString = $mutString . $mcount . "\t";
+      }
+      $mutString = substr($mutString, 0, length($mutString)-1);
+      $permut_table{"$mut:$name"} = $mutString;
+    }
+  }
+  close TABLE;
+  open (TABLE, ">$table.per-mutation.txt");
+  print TABLE $firstline .  "\n";
+  foreach my $namemut (@mutKeys) {
+    print TABLE $namemut . "\t" . $permut_table{"$namemut"} . "\n";
+  }
+  close TABLE;
+}

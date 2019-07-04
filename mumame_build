@@ -1,0 +1,664 @@
+#!/usr/bin/perl
+## MUMAME-build
+
+$app_title     = "MuMaMe - Mutation Mapping in Metagenomes";
+$app_author    = "Johan Bengtsson-Palme, University of Wisconsin-Madison";
+$app_version   = "1.0";
+$app_message   = "";
+# ----------------------------------------------------------------- #
+
+# License information
+$license =
+  "  MuMaMe - Mutation Mapping in Metagenomes
+    Copyright (C) 2018-2019 Johan Bengtsson-Palme
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
+       * Redistributions of source code must retain the above copyright
+         notice, this list of conditions and the following disclaimer.
+       * Redistributions in binary form must reproduce the above copyright
+         notice, this list of conditions and the following disclaimer in the
+         documentation and/or other materials provided with the distribution.
+       * Neither the name of University of Gothenburg, nor the
+         names of its contributors may be used to endorse or promote products
+         derived from this software without specific prior written permission.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS 'AS IS' AND
+   ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+   WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+   DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+   DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+   (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+   LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+";
+
+## BUGS:
+$bugs = "Added feature:\
+- Added a usage message when mumame is called without arguments.\
+
+Known bugs in this version ($app_version):\
+- None\
+";
+
+## OPTIONS:
+
+$usage = "\
+-i <sequence file> : the path to the input file (FASTA-format)\
+-m <mutation file> : the path to the mutation information input file (tab-separated text, see manual for format)\
+-o <output file> : the base name of the database, default = 'mutation_database'\
+
+-r <integer> : read-length\
+-c <integer> : size of cutout (over-rides -r option above), default = 20 for protein, 55 for nucleotide\
+-n : specifies nucleotide sequences, default is to assume protein\
+-t <fasta> : type of database to build, default = fasta\
+-d <integer> : maximum depth to transcend into to build all combinations of mutations, default = 12\
+
+-h : displays short usage information\
+--help : displays this help message\
+--bugs : displays the bug fixes and known bugs in this version\
+--license : displays licensing information\
+";
+
+
+## Print title message
+print STDERR "$app_title\nby $app_author\nVersion: $app_version\n$app_message";
+print STDERR "-----------------------------------------------------------------\n";
+
+
+$sequences = "";
+$snpinfo = "";
+$output = "mutation_database";
+$read_length = 0;
+$prot_db = 1;
+$cutsize = 0;
+$db_type = "fasta";
+$maxTranscend = 12;
+
+for ($i = 0; $i <= scalar(@ARGV); $i++) { # Goes through the list of arguments
+  $arg = @ARGV[$i];		# Stores the current argument in $arg
+
+  if ($arg eq "-i") {		# Read input file from -i flag
+    $i++;
+    $sequences = @ARGV[$i];
+  }
+  if ($arg eq "-o") {		# Read output file
+    $i++;
+    $output = @ARGV[$i];
+  }
+  if ($arg eq "-m") {       	# Read mapping file from -m flag
+    $i++;
+    $snpinfo = @ARGV[$i];
+  }
+
+  if ($arg eq "-n") {		# Read nucleotide DB flag
+    $prot_db = 0;
+  }
+
+
+  if ($arg eq "-r") {		# Read read-length
+    $i++;
+    $read_length = @ARGV[$i];
+  }
+  if ($arg eq "-c") {		# Read cutout size
+    $i++;
+    $cutsize = @ARGV[$i];
+  }
+  if ($arg eq "-t") {		# Read database type
+    $i++;
+    $db_type = @ARGV[$i];
+  }
+  if ($arg eq "-d") {		# Read max depth
+    $i++;
+    $maxTranscend = @ARGV[$i];
+  }
+
+
+  ## If "-h" is among the options, output short usage data and options
+  if ($arg eq "-h") {
+    print "Usage: mumame_build -i <input file> -m <mutations file> -o <output database>\nOptions:$usage";
+    print "-----------------------------------------------------------------\n";
+    exit;			# Exit
+  }
+
+  ## If "--help" is among the options, output usage data and all options
+  if ($arg eq "--help") {
+    print "Usage: mumame_build -i <input file> -m <mutations file> -o <output database>\nOptions:$usage";
+    print "-----------------------------------------------------------------\n";
+    exit;			# Exit
+  }
+
+  ## If "--bugs" is among the options, output bugs and features information
+  if ($arg eq "--bugs") {
+    print "$bugs\n";
+    exit;			# Exit
+  }
+
+  ## If "--license" is among the options, output license information
+  if ($arg eq "--license") {
+    print "$license\n";
+    exit;			# Exit
+  }
+
+}
+
+if (($sequences eq "") || ($snpinfo eq "")) {
+  print "Usage: mumame_build -i <input file> -m <mutations file> -o <output database>\nOptions:$usage";
+  print "-----------------------------------------------------------------\n";
+  exit;
+}
+
+
+if (($cutsize == 0) && ($read_length > 0)) {
+  $cutsize = int($read_length / 2 + 0.5);
+}
+
+if ($cutsize == 0) {
+  if ($prot_db == 1) {
+    $cutsize = 20;
+  } else {
+    $cutsize = 55;
+  }
+}
+
+if ($prot_db == 1) {
+  $matchmodel = "protein";
+} else {
+  $matchmodel = "RNA|gene|DNA";
+}
+
+print STDERR "Reading sequences...\n";
+
+open (SEQ, $sequences);
+while ($line = <SEQ>) {
+  chomp($line);
+  if (substr($line, 0, 1) eq ">") {
+    if ($seqID ne "") {
+      $seq = $seqs{$seqID};   # Store this part of the DNA sequence in the intermediate varaible $cseq
+      $seq =~ s/[ .-]//g;   # Remove any gap characters present in this sequence part (good if input was an alignment)
+      $seq =~ tr/[a-z]/[A-Z]/;   # Make all letters uppercase
+      $seq =~ s/[^A-Z]//g;  # Remove all non-alphabetic characters
+      if ($prot_db == 0) {
+	if ($dir eq "-") {
+	  $seq =~ tr/ACGTURYSWKMBDHVN/TGCAAYRWSMKVHDBN/;   # Replace all characters with their complementary base
+	  $seqs{$seqID} = reverse($seq);
+	} else {
+	  $seqs{$seqID} = $seq;
+	}
+      } else {
+	$seqs{$seqID} = $seq;
+      }
+    }
+    $seqID = $line;
+    $seqID =~ s/\|[^| ]* .*//;
+    $seqID =~ s/^>//;
+    $seqID =~ s/^[^|]*\|//;
+    $seqID =~ s/\|.*//;
+    $aro = $line;
+    $aro =~ s/.*ARO://;
+    $aro =~ s/\|.*//;
+    $dir = $line;
+    $dir =~ s/^[^+-]*//;
+    $dir =~ s/\|.*//;
+    if ($dir eq "") {
+      $dir = "+";
+    }
+    if ($aro eq "") {
+      $aro = $seqID;
+    }
+    if (defined($aro_to_seqID{$aro})) {
+      $aro_to_seqID{$aro} = $aro_to_seqID{$aro} . "\n" . $seqID;
+    } else {
+      $aro_to_seqID{$aro} = $seqID;
+    }
+  } else {
+    if ($seqID ne "") {
+      $seqs{$seqID} = $seqs{$seqID} . $line;
+    }
+  }
+}
+close SEQ;
+
+print STDERR "Processing SNP info...\n";
+
+open (MATCHTABLE, ">$output.match_table.txt");
+open (OUTSEQ, ">$output.fasta");
+open (MAPPING, ">$output.mapping.txt");
+
+undef %newIDList;
+open (SNPS, $snpinfo);
+$line = <SNPS>;
+chomp($line);
+@headers = split('\t', $line);
+
+$colNo = -1;
+$accession_col = -1;
+$name_col = -1;
+$model_col = -1;
+$parameter_col = -1;
+$mutations_col = -1;
+
+foreach $header (@headers) {
+  $colNo++;
+  if ($header eq "Accession") {
+    $accession_col = $colNo;
+  }
+  if ($header eq "Name") {
+    $name_col = $colNo;
+  }
+  if ($header eq "Model Type") {
+    $model_col = $colNo;
+  }
+  if ($header eq "Parameter Type") {
+    $parameter_col = $colNo;
+  }
+  if ($header eq "Mutations") {
+    $mutations_col = $colNo;
+  }
+}
+
+if ($model_col == -1) {
+  if ($prot_db == 1) {
+    print STDERR "Warning! No column named 'Model Type', will assume protein\n";
+  } else {
+    print STDERR "Warning! No column named 'Model Type', will assume nucleotide\n";
+  }
+}
+#if ($parameter_col == -1) {
+#  print STDERR "Warning! No column named 'Parameter Type', will assume only single mutations\n";
+#}
+if ($accession_col == -1) {
+  print STDERR "Error! Invalid mutations file. No column named 'Accession'\n";
+  exit;
+}
+if ($mutations_col == -1) {
+  print STDERR "Error! Invalid mutations file. No column named 'Mutations'\n";
+  exit;
+}
+if ($name_col == -1) {
+  $name_col = $mutations_col;
+}
+
+%mutsPerID = {};
+%mutInfo = {};
+while ($line = <SNPS>) {
+  chomp($line);
+  @data = split('\t', $line);
+  $aro = @data[$accession_col];
+  if ($model_col > -1) {
+    $model = @data[$model_col];
+  } else {
+    $model = "DNA";
+  }
+  if ($parameter_col > -1) {
+    $parameter = @data[$parameter_col];
+  } else {
+    $parameter = "";
+  }
+  $mutations = @data[$mutations_col];
+  $mutations =~ s/ //g;
+  $name = @data[$name_col];
+  if (defined($mutsPerID{$aro})) {
+    $saveMutations = "";
+    foreach $mut (split(',', $mutations)) {
+      if ($mut !~ m/^[A-Z][0-9][0-9]*[A-Z]$/) {
+	next;
+      }
+      $mutInfo{"$aro + $mut"} = $line;
+      $mutInfo{"$aro"} = $line;
+      $saveMutations = $saveMutations . "," . $mut;
+    }
+    $saveMutations = substr($saveMutations, 1);
+    $mutsPerID{$aro} = $mutsPerID{$aro} . "," . $saveMutations;
+  } else {
+    $saveMutations = "";
+    foreach $mut (split(',', $mutations)) {
+      if ($mut !~ m/^[A-Z][0-9][0-9]*[A-Z]$/) {
+	next;
+      }
+      $mutInfo{"$aro + $mut"} = $line;
+      $mutInfo{"$aro"} = $line;
+      $saveMutations = $saveMutations . "," . $mut;
+    }
+    $saveMutations = substr($saveMutations, 1);
+    $mutsPerID{$aro} = $saveMutations;
+  }
+}
+close SNPS;
+
+%processMuts = {};
+%doneCombos = {};
+foreach $aro (sort(keys(%mutsPerID))) {
+  @aroMuts = split(',', $mutsPerID{$aro});
+  @sortedMuts = sort { (($a =~ m/([0-9]+)/)[0] <=> ($b =~ m/([0-9]+)/)[0]) } @aroMuts;
+
+  for ($m = 0; $m < scalar(@sortedMuts); $m++) {
+    $processList = "";
+    $pos = @sortedMuts[$m];
+    $pos =~ s/[^0-9]//g;
+    $joinTo = $m;
+    $joinFrom = $m;
+    for ($n = 0; $n < scalar(@sortedMuts); $n++) {
+      $npos = @sortedMuts[$n];
+      $npos =~ s/[^0-9]//g;
+      if ($npos == $pos) {
+	next;
+      }
+      if (($npos >= $pos - $cutsize) && ($npos < $pos)) {
+	if ($joinFrom == $m) {
+	  $joinFrom = $n;
+	}
+      }
+      if (($npos <= $pos + $cutsize) && ($npos > $pos)) {
+	$joinTo = $n;
+      }
+    }
+    if (($joinTo > $m) || ($joinFrom < $m)) {
+      $pos = @sortedMuts[$m];
+      $pos =~ s/[^0-9]//g;
+      for ($n = $joinFrom; $n <= $joinTo; $n++) {
+	$npos = @sortedMuts[$n];
+	$npos =~ s/[^0-9]//g;
+	if ($n == $m) {
+	  $processList = $processList . @sortedMuts[$n] . " ";
+	} else {
+	  if ($npos == $pos) {
+	    next;
+	  }
+	  $processList = $processList . @sortedMuts[$n] . " ";
+	}
+      }
+    } else {
+      $processList = @sortedMuts[$m];
+    }
+    $thisMut = @sortedMuts[$m];
+    if (defined($doneCombos{"$processList"})) {
+      next;
+    } else {
+      $processMuts{"$aro + $thisMut"} = $processList;
+    }
+    $doneCombos{"$processList"} = 1;
+  }
+}
+
+print STDERR "Building database...\n";
+$arotracker = 0;
+$aromax = scalar(keys(%processMuts));
+$lastTracker = 10;
+foreach $aromut (sort(keys(%processMuts))) {
+  $arotracker++;
+  if (($arotracker / $aromax * 100) >= $lastTracker) {
+    print STDERR $lastTracker . "% .. ";
+    $lastTracker = $lastTracker + 10;
+  }
+  ($aro,$sourcemut) = split(' \+ ', $aromut);
+  @seqIDs = split('\n',$aro_to_seqID{$aro});
+  print MATCHTABLE "Accession: $aro   ";
+  print MATCHTABLE "SeqIDs: @seqIDs[0]\n";
+  @muts = split(' ',$processMuts{$aromut});
+  foreach $seqID (@seqIDs) {
+    if (defined($seqs{$seqID})) {
+      $seq = $seqs{$seqID};
+      #print $aro . "\n";
+      @mutationList = createMutations($seq, $processMuts{$aromut});
+      undef %seen;
+      my @uniqueMuts = grep { !$seen{$_}++ } @mutationList;
+      foreach $entry (@uniqueMuts) {
+	($mutSeq, $mutation) = split('\n', $entry);
+	if ($mutation eq "") {
+	  $wtSeq = $mutSeq;
+	}
+      }
+      foreach $entry (@uniqueMuts) {
+	($mutSeq, $mutation) = split('\n', $entry);
+	if (defined($mutInfo{"$aro + $mutation"})) {
+	  if ($mutInfo{"$aro + $mutation"} ne "") {
+	    @data = split('\t', $mutInfo{"$aro + $mutation"});
+	  } else {
+	    @data = split('\t', $mutInfo{"$aro"});
+	  }
+	} else {
+	  ($firstMutation) = split('\+', $mutation);
+	  if ($mutInfo{"$aro + $mutation"} ne "") {
+	    @data = split('\t', $mutInfo{"$aro + $firstMutation"});
+	  } else {
+	    @data = split('\t', $mutInfo{"$aro"});
+	  }
+	  @data[$parameter_col] = "multiple resistance variants";
+	  @data[$mutations_col] = $mutation;
+	}
+	if ($model_col > -1) {
+	  $model = @data[$model_col];
+	} else {
+	  $model = "DNA";
+	}
+	if ($parameter_col > -1) {
+	  $parameter = @data[$parameter_col];
+	} else {
+	  $parameter = "";
+	}
+	$name = @data[$name_col];
+	#3003817	Acinetobacter baumannii gyrA conferring resistance to fluoroquinolones	protein variant model	single resistance variant	S83L
+	#3004132	Chlamydomonas reinhardtii 23S rRNA with mutation conferring resistance to erythromycin	rRNA gene variant model	single resistance variant	G1628G
+	@mutCollection = split('\+', $mutation);
+	foreach $specMut (@mutCollection) {
+	  $position = $specMut;
+	  $position =~ s/[^0-9]//g;
+	  $newID = $seqID . "|" . $mutation . "|" . $position;
+	  $newIDWT = $seqID . "|WT|" . $position;
+	  
+	  if (not(defined($newIDList{"$newID"}))) {
+	    $newIDList{$newID} = 1;
+	    if ($position > $cutsize) {
+	      $cutout = substr($mutSeq, $position - $cutsize, $cutsize * 2 + 1);
+	    } else {
+	      $cutout = substr($mutSeq, 0, $cutsize * 2 + 1);
+	    }
+	    print OUTSEQ ">$newID\n";
+	    print OUTSEQ "$cutout\n";
+	    print MAPPING $newID . "\t" . $mutation . ":" . $name . "\n";
+	  }
+	  
+	  if (not(defined($newIDList{"$newIDWT"}))) {
+	    $newIDList{$newIDWT} = 1;
+	    if ($position > $cutsize) {
+	      $cutout = substr($wtSeq, $position - $cutsize, $cutsize * 2 + 1);
+	    } else {
+	      $cutout = substr($wtSeq, 0, $cutsize * 2 + 1);
+	    }
+	    print OUTSEQ ">$newIDWT\n";
+	    print OUTSEQ "$cutout\n";
+	    print MAPPING $newIDWT . "\t" . "Wildtype" . ":" . $name . "\n";
+	  }
+	}
+      }
+    }
+  }
+}
+print STDERR "\n";
+close SNPS;
+close MATCHTABLE;
+close OUTSEQ;
+close MAPPING;
+
+print STDERR "Finalizing database...\n";
+if ($db_type eq "vmatch") {
+  if ($prot_db == 1) {
+    `mkvtree -db $output.fasta -indexname $output -protein -pl -allout`;
+  } else {
+    `mkvtree -db $output.fasta -indexname $output -dna -pl -allout`;
+  }
+}
+
+if ($db_type eq "blast") {
+  if ($prot_db == 1) {
+    `formatdb -i $output.fasta -n $output -p T -o T`;
+  } else {
+    `formatdb -i $output.fasta -n $output -p F -o T`;
+  }
+}
+
+print STDERR "MuMaMe-build has finished!\n";
+
+sub createMutations {
+  my $inputSeq = shift;
+  my $mutList = shift;
+  undef my @mutSeqs;
+
+  my @mutSeqs = getAllTails($inputSeq,$mutList);
+
+  #my $entry = "";
+  #foreach $entry (@mutSeqs) {
+  #  ($seq, $trace) = split('\n', $entry);
+  #  print $trace . "\n";
+  #}
+
+  return @mutSeqs;
+}
+
+sub getAllTails {
+  my $inputSeq = shift;
+  my $mutList = shift;
+  my @mutList = split(' ', $mutList);
+
+  my $mutPos = $mutList;
+  $mutPos =~ s/[^0-9 ]//g;
+  my @mutPoss = split(' ', $mutPos);
+
+  undef %seen;
+  my @uniquePoss = grep { !$seen{$_}++ } @mutPoss;
+
+  my @returnSeqs = ();
+  if (scalar(@uniquePoss) > $maxTranscend) {
+    if (defined($tooDeep{$aro}) == FALSE) {
+      $tooDeep{$aro} = 1;
+      print STDERR "Too deep to parse. Will not build all combinations for $aro.\n";
+      print STDERR "MuMaMe will build all mutations as single mutations for $aro.\n";
+    }
+    
+    foreach $smutation (@mutList) {
+      my $wtres = $smutation;
+      $wtres =~ s/[0-9].*//;
+      my $newres = $smutation;
+      $newres =~ s/.*[0-9]//;
+      my $respos = $smutation;
+      $respos =~ s/[^0-9]//g;
+      if ($prot_db == 0) {
+	$wtres =~ tr/U/T/;
+	$newres =~ tr/U/T/;
+      }
+      my $alt = substr($inputSeq, 0, $respos - 1) . $newres . substr($inputSeq, $respos) . "\n" . $smutation;
+      push(@returnSeqs, $alt);
+      my $altWT = substr($inputSeq, 0, $respos - 1) . $wtres . substr($inputSeq, $respos) . "\n";
+      push(@returnSeqs, $altWT);
+    }
+  } else {
+
+  my $pm = 0;
+  my $wtres = @mutList[$pm];
+  $wtres =~ s/[0-9].*//;
+  my $newres = @mutList[$pm];
+  $newres =~ s/.*[0-9]//;
+  my $respos = @mutList[$pm];
+  $respos =~ s/[^0-9]//g;
+  if ($prot_db == 0) {
+    $wtres =~ tr/U/T/;
+    $newres =~ tr/U/T/;
+  }
+
+  my $newMutList = substr($mutList, length(@mutList[$pm]) + 1);
+  
+  if (length($newMutList) > 1) {
+    my @alts = checkIfSame($newMutList,$respos);
+    my $newMutList = @alts[0];
+    #print @mutList[$pm] . " : " . $mutList . " -> " . $newMutList . "\n";
+    push(@alts, $newres);
+    push(@alts, $wtres);
+    undef %seen;
+    my @uniqueAlts = grep { !$seen{$_}++ } @alts;
+
+    # print "New mut list: " . $newMutList . "\n";
+    # print "Position $respos alternatives: ";
+    # for ($altN = 1; $altN < scalar(@uniqueAlts); $altN++) {
+    #   print @uniqueAlts[$altN];
+    # }
+    # print "\n----------------\n";
+
+    my @subSeqs = getAllTails($inputSeq,$newMutList);
+    foreach $entry (@subSeqs) {
+      (my $entrySeq, my $entryTrace) = split('\n', $entry);
+      if (scalar(@uniqueAlts) > 1) {
+	for ($altN = 1; $altN < scalar(@uniqueAlts); $altN++) {
+	  if ($entryTrace ne "") {
+	    #print substr($entrySeq, 0, $respos) . "\n";
+	    #print $respos . ":\t". @uniqueAlts[$altN] . "\n";
+	    #print substr($entrySeq, $respos + 1) . "\n";
+	    #print "---------------------------\n";
+	    if (@uniqueAlts[$altN] eq $wtres) {
+	      $alt = substr($entrySeq, 0, $respos - 1) . @uniqueAlts[$altN] . substr($entrySeq, $respos) . "\n" . $entryTrace;
+
+	    } else {
+	      $alt = substr($entrySeq, 0, $respos - 1) . @uniqueAlts[$altN] . substr($entrySeq, $respos) . "\n" . $wtres . $respos . @uniqueAlts[$altN] . "+" . $entryTrace;
+	    }
+	    push(@returnSeqs, $alt);
+	  } else {
+	    if (@uniqueAlts[$altN] eq $wtres) {
+	      $alt = substr($entrySeq, 0, $respos - 1) . @uniqueAlts[$altN] . substr($entrySeq, $respos) . "\n";
+	    } else {
+	      $alt = substr($entrySeq, 0, $respos - 1) . @uniqueAlts[$altN] . substr($entrySeq, $respos) . "\n" . $wtres . $respos . @uniqueAlts[$altN];
+	    }
+	    push(@returnSeqs, $alt);
+	  }
+	  #print $altN . " @uniqueAlts[$altN] -> " . $wtres . $respos . @uniqueAlts[$altN] . "+" . $entryTrace . "\n";
+	}
+      }
+    }
+  } else {
+    $wtAlt = substr($inputSeq, 0, $respos - 1) . $wtres . substr($inputSeq, $respos) . "\n";
+    $resalt = substr($inputSeq, 0, $respos - 1) . $newres . substr($inputSeq, $respos) . "\n" .  $wtres . $respos . $newres;
+    push(@returnSeqs, $resalt);
+    push(@returnSeqs, $wtAlt);
+  }
+}
+  
+  return @returnSeqs;
+}
+
+sub checkIfSame {
+  my $mutList = shift;
+  my $checkPos = shift;
+  my @mutList = split(' ', $mutList);
+
+  my $pm = 0;
+  my $wtres = @mutList[$pm];
+  $wtres =~ s/[0-9].*//;
+  my $newres = @mutList[$pm];
+  $newres =~ s/.*[0-9]//;
+  my $respos = @mutList[$pm];
+  $respos =~ s/[^0-9]//g;
+  if ($prot_db == 0) {
+    $wtres =~ tr/U/T/;
+    $newres =~ tr/U/T/;
+  }
+
+  #print $mutList . " " . $checkPos . "\n";
+
+  my $newMutList = substr($mutList, length(@mutList[$pm]) + 1);
+
+  my @returnList = ();
+  if ($respos == $checkPos) {
+    if (length($newMutList) > 0) {
+      @returnList = checkIfSame($newMutList,$checkPos);
+      push(@returnList, $newres);
+    } else {
+      @returnList[0] = $newMutList;
+      push(@returnList, $newres);
+    }
+  } else {
+    @returnList[0] = $newMutList; 
+  }
+  return @returnList;
+}
+    
